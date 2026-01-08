@@ -11,7 +11,8 @@ set -euo pipefail
 # Configuration
 DEFAULT_WP_PATH="/app/www"
 LOG_FILE="/app/conf/faaaster-clean.log"
-WP_USER="www-data"
+DEFAULT_WP_USER="www-data"
+WP_USER=""
 DRY_RUN=false
 VERBOSE=false
 FORCE_CLEAN=false
@@ -49,6 +50,9 @@ Verify WordPress checksums and repair any mismatched files.
 
 OPTIONS:
     -p, --path PATH       Path to WordPress installation (default: $DEFAULT_WP_PATH)
+    -u, --user USER       User to run WP-CLI as and set file ownership (default: $DEFAULT_WP_USER)
+                          Common values: www-data (Debian/Ubuntu), apache (CentOS/RHEL),
+                          nginx, _www (macOS), or your hosting account username
     -d, --dry-run         Preview actions without making changes
     -v, --verbose         Show detailed output
     -f, --force-clean     Scan and clean critical files (wp-config.php, mu-plugins, etc.)
@@ -56,9 +60,11 @@ OPTIONS:
     -h, --help            Show this help message
 
 EXAMPLES:
-    $(basename "$0")                      # Run with defaults
+    $(basename "$0")                      # Run with defaults (user: www-data)
     $(basename "$0") --dry-run            # Preview what would be done
     $(basename "$0") -p /var/www/html     # Specify WordPress path
+    $(basename "$0") -u nginx             # Run as nginx user
+    $(basename "$0") -u apache -p /var/www/html  # CentOS with custom path
     $(basename "$0") --force-clean        # Also scan/clean critical files
     $(basename "$0") --fix-permissions    # Fix all file permissions first
 
@@ -878,6 +884,10 @@ main() {
                 wp_path="$2"
                 shift 2
                 ;;
+            -u|--user)
+                WP_USER="$2"
+                shift 2
+                ;;
             -d|--dry-run)
                 DRY_RUN=true
                 shift
@@ -904,6 +914,18 @@ main() {
         esac
     done
 
+    # Set default user if not specified
+    if [[ -z "$WP_USER" ]]; then
+        WP_USER="$DEFAULT_WP_USER"
+    fi
+
+    # Verify the user exists
+    if ! id "$WP_USER" &>/dev/null; then
+        log "ERROR" "User '$WP_USER' does not exist on this system"
+        log "INFO" "Use -u/--user to specify a valid user (e.g., www-data, apache, nginx)"
+        exit 1
+    fi
+
     # Detect or use default WordPress path
     if [[ -z "$wp_path" ]]; then
         wp_path=$(detect_wp_path)
@@ -916,6 +938,7 @@ main() {
     log "INFO" "  WP Checksum Verification & Repair"
     log "INFO" "=========================================="
     log "INFO" "WordPress Path: $wp_path"
+    log "INFO" "WP User: $WP_USER"
     log "INFO" "Dry Run: $DRY_RUN"
     log "INFO" "Force Clean: $FORCE_CLEAN"
     log "INFO" "Fix Permissions: $FIX_PERMISSIONS"

@@ -18,7 +18,7 @@ Script de vérification et réparation des checksums WordPress. Vérifie l'inté
 ## Prérequis
 
 - WP-CLI installé et accessible dans le PATH
-- Accès root ou sudo pour exécuter les commandes en tant que `www-data`
+- Accès root ou sudo pour exécuter les commandes en tant que l'utilisateur web
 - WordPress installé dans `/app/www` (par défaut) ou chemin personnalisé
 
 ## Installation
@@ -43,6 +43,15 @@ chmod +x /app/conf/wp-checksum-repair.sh
 # Spécifier un chemin WordPress personnalisé
 ./wp-checksum-repair.sh -p /var/www/html
 
+# Spécifier un utilisateur différent (CentOS/RHEL)
+./wp-checksum-repair.sh -u apache
+
+# Spécifier un utilisateur différent (Nginx)
+./wp-checksum-repair.sh -u nginx
+
+# Combiner chemin et utilisateur
+./wp-checksum-repair.sh -u apache -p /var/www/html
+
 # Corriger les permissions sur tous les fichiers
 ./wp-checksum-repair.sh --fix-permissions
 
@@ -58,11 +67,23 @@ chmod +x /app/conf/wp-checksum-repair.sh
 | Argument | Description |
 |----------|-------------|
 | `-p, --path PATH` | Chemin vers l'installation WordPress (défaut: `/app/www`) |
+| `-u, --user USER` | Utilisateur pour exécuter WP-CLI et définir les permissions (défaut: `www-data`) |
 | `-d, --dry-run` | Prévisualise les actions sans effectuer de modifications |
 | `-v, --verbose` | Affiche les détails supplémentaires |
 | `-f, --force-clean` | Scanne et nettoie les fichiers critiques (wp-config.php, mu-plugins, drop-ins) |
 | `--fix-permissions` | Corrige les permissions et propriétaires sur tous les fichiers WordPress |
 | `-h, --help` | Affiche l'aide |
+
+### Utilisateurs courants par environnement
+
+| Environnement | Utilisateur |
+|---------------|-------------|
+| Debian/Ubuntu | `www-data` (défaut) |
+| CentOS/RHEL | `apache` |
+| Nginx | `nginx` |
+| macOS | `_www` |
+| Plesk | Utilisateur du domaine |
+| cPanel | Utilisateur du compte |
 
 ## Comportement
 
@@ -84,7 +105,7 @@ chmod +x /app/conf/wp-checksum-repair.sh
 
 ### Option --fix-permissions
 - Supprime les attributs immutables (chattr -i / chflags nouchg)
-- Change le propriétaire en `www-data:www-data`
+- Change le propriétaire selon l'utilisateur spécifié (défaut: `www-data:www-data`)
 - Définit les permissions : répertoires 755, fichiers 644
 - wp-config.php : 640 (plus restrictif)
 
@@ -110,6 +131,7 @@ Le script utilise `--skip-plugins --skip-themes` pour toutes les commandes WP-CL
 [INFO]   WP Checksum Verification & Repair
 [INFO] ==========================================
 [INFO] WordPress Path: /app/www
+[INFO] WP User: www-data
 [INFO] Dry Run: false
 [INFO] Force Clean: false
 [INFO] Fix Permissions: false
