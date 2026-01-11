@@ -18,10 +18,20 @@ VERBOSE=false
 FORCE_CLEAN=false
 FIX_PERMISSIONS=false
 
-# WP-CLI wrapper to run as www-data with safe defaults
+# WP-CLI wrapper to run as the target user with safe defaults
 # Skips plugins and themes to avoid executing potentially malicious code
+# Works whether running as root or as www-data directly
 wp_cli() {
-    sudo -u "$WP_USER" wp --skip-plugins --skip-themes "$@"
+    local current_user
+    current_user=$(id -un)
+
+    if [[ "$current_user" == "$WP_USER" ]]; then
+        # Already running as the target user, no sudo needed
+        wp --skip-plugins --skip-themes "$@"
+    else
+        # Running as root (or another user), use sudo
+        sudo -u "$WP_USER" wp --skip-plugins --skip-themes "$@"
+    fi
 }
 
 # Colors for output
@@ -30,6 +40,22 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# Check if running as root
+is_root() {
+    [[ $(id -u) -eq 0 ]]
+}
+
+# Run command that requires root privileges (chown, chattr)
+# Silently skips if not root
+run_as_root() {
+    if is_root; then
+        "$@"
+    else
+        # Not root, skip silently (already logged warning at start)
+        return 0
+    fi
+}
 
 # Arrays to track failures
 declare -a FAILED_PLUGINS=()
@@ -258,10 +284,12 @@ fix_core_permissions() {
         done
     fi
 
-    # Fix ownership to www-data
-    log "INFO" "Fixing ownership to $WP_USER..."
-    chown -R "$WP_USER:$WP_USER" "$wp_path/wp-admin" 2>/dev/null || true
-    chown -R "$WP_USER:$WP_USER" "$wp_path/wp-includes" 2>/dev/null || true
+    # Fix ownership to www-data (requires root)
+    if is_root; then
+        log "INFO" "Fixing ownership to $WP_USER..."
+        chown -R "$WP_USER:$WP_USER" "$wp_path/wp-admin" 2>/dev/null || true
+        chown -R "$WP_USER:$WP_USER" "$wp_path/wp-includes" 2>/dev/null || true
+    fi
 
     # Fix permissions: directories 755, files 644
     log "INFO" "Fixing file permissions..."
@@ -280,30 +308,36 @@ fix_all_permissions() {
     log "INFO" "Fixing permissions on entire WordPress installation..."
     log "INFO" "=========================================="
 
+    if ! is_root; then
+        log "WARNING" "--fix-permissions requires root privileges, skipping ownership changes"
+    fi
+
     if [[ "$DRY_RUN" == true ]]; then
         log "DRY-RUN" "Would fix permissions on entire WordPress installation"
         return 0
     fi
 
-    # Remove immutable attributes from entire installation
-    log "INFO" "Removing immutable attributes..."
+    # Remove immutable attributes from entire installation (requires root)
+    if is_root; then
+        log "INFO" "Removing immutable attributes..."
 
-    # Linux: remove immutable attribute
-    if command -v chattr &> /dev/null; then
-        chattr -R -i "$wp_path" 2>/dev/null || true
+        # Linux: remove immutable attribute
+        if command -v chattr &> /dev/null; then
+            chattr -R -i "$wp_path" 2>/dev/null || true
+        fi
+
+        # macOS: remove user immutable flag
+        if command -v chflags &> /dev/null; then
+            chflags -R nouchg "$wp_path" 2>/dev/null || true
+        fi
+
+        # Fix ownership on entire WordPress directory
+        log "INFO" "Fixing ownership to $WP_USER:$WP_USER..."
+        chown -R "$WP_USER:$WP_USER" "$wp_path" 2>/dev/null || {
+            log "ERROR" "Failed to change ownership."
+            return 1
+        }
     fi
-
-    # macOS: remove user immutable flag
-    if command -v chflags &> /dev/null; then
-        chflags -R nouchg "$wp_path" 2>/dev/null || true
-    fi
-
-    # Fix ownership on entire WordPress directory
-    log "INFO" "Fixing ownership to $WP_USER:$WP_USER..."
-    chown -R "$WP_USER:$WP_USER" "$wp_path" 2>/dev/null || {
-        log "ERROR" "Failed to change ownership. Are you running as root?"
-        return 1
-    }
 
     # Fix permissions
     log "INFO" "Setting directory permissions to 755..."
@@ -509,7 +543,9 @@ clean_wp_config() {
         fi
 
         mv "$temp_file" "$wp_config"
-        chown "$WP_USER:$WP_USER" "$wp_config"
+        if is_root; then
+            chown "$WP_USER:$WP_USER" "$wp_config"
+        fi
         chmod 644 "$wp_config"
         log "SUCCESS" "wp-config.php has been cleaned (backup saved as .infected.bak)"
     else
@@ -939,6 +975,10 @@ main() {
     log "INFO" "=========================================="
     log "INFO" "WordPress Path: $wp_path"
     log "INFO" "WP User: $WP_USER"
+    log "INFO" "Running as: $(id -un)"
+    if ! is_root; then
+        log "WARNING" "Not running as root - ownership changes will be skipped"
+    fi
     log "INFO" "Dry Run: $DRY_RUN"
     log "INFO" "Force Clean: $FORCE_CLEAN"
     log "INFO" "Fix Permissions: $FIX_PERMISSIONS"
