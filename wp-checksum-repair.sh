@@ -238,16 +238,24 @@ delete_rogue_core_files() {
         local full_path="$wp_path/$rogue_file"
         if [[ -f "$full_path" ]]; then
             log "INFO" "Deleting rogue file: $rogue_file"
-            # Remove immutable attribute if present (Linux)
+            # Remove immutable attribute if present (Linux) + parent dir
+            chattr -i "$(dirname "$full_path")" 2>/dev/null || true
             chattr -i "$full_path" 2>/dev/null || true
             # Remove on macOS
+            chflags nouchg "$(dirname "$full_path")" 2>/dev/null || true
             chflags nouchg "$full_path" 2>/dev/null || true
-            rm -f "$full_path"
+            chmod u+w "$(dirname "$full_path")" 2>/dev/null || true
+            if ! rm -f "$full_path" 2>/dev/null; then
+                log "ERROR" "Failed to delete rogue file: $rogue_file (check permissions)"
+            fi
         elif [[ -d "$full_path" ]]; then
             log "INFO" "Deleting rogue directory: $rogue_file"
             chattr -R -i "$full_path" 2>/dev/null || true
             chflags -R nouchg "$full_path" 2>/dev/null || true
-            rm -rf "$full_path"
+            chmod -R u+w "$full_path" 2>/dev/null || true
+            if ! rm -rf "$full_path" 2>/dev/null; then
+                log "ERROR" "Failed to delete rogue directory: $rogue_file (check permissions)"
+            fi
         fi
     done
 
@@ -317,21 +325,29 @@ fix_all_permissions() {
         return 0
     fi
 
-    # Remove immutable attributes from entire installation (requires root)
+    # Remove immutable attributes from entire installation
+    log "INFO" "Removing immutable attributes..."
+
+    # First, handle the root directory itself (critical for write access)
+    if command -v chattr &> /dev/null; then
+        chattr -i "$wp_path" 2>/dev/null || true
+    fi
+    if command -v chflags &> /dev/null; then
+        chflags nouchg "$wp_path" 2>/dev/null || true
+    fi
+    # Ensure root directory is writable
+    chmod u+w "$wp_path" 2>/dev/null || true
+
+    # Then handle all contents recursively
+    if command -v chattr &> /dev/null; then
+        chattr -R -i "$wp_path" 2>/dev/null || true
+    fi
+    if command -v chflags &> /dev/null; then
+        chflags -R nouchg "$wp_path" 2>/dev/null || true
+    fi
+
+    # Fix ownership on entire WordPress directory (requires root)
     if is_root; then
-        log "INFO" "Removing immutable attributes..."
-
-        # Linux: remove immutable attribute
-        if command -v chattr &> /dev/null; then
-            chattr -R -i "$wp_path" 2>/dev/null || true
-        fi
-
-        # macOS: remove user immutable flag
-        if command -v chflags &> /dev/null; then
-            chflags -R nouchg "$wp_path" 2>/dev/null || true
-        fi
-
-        # Fix ownership on entire WordPress directory
         log "INFO" "Fixing ownership to $WP_USER:$WP_USER..."
         chown -R "$WP_USER:$WP_USER" "$wp_path" 2>/dev/null || {
             log "ERROR" "Failed to change ownership."
@@ -571,11 +587,11 @@ repair_core() {
     # This handles cases where malware has corrupted the version.php file
     # The version could be at the start, end, or anywhere in the output
     local wp_version
-    wp_version=$(echo "$wp_version_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -1)
+    wp_version=$(echo "$wp_version_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -1 || true)
 
     # If no patch version found, try major.minor format
     if [[ -z "$wp_version" ]]; then
-        wp_version=$(echo "$wp_version_raw" | grep -oE '[0-9]+\.[0-9]+' | tail -1)
+        wp_version=$(echo "$wp_version_raw" | grep -oE '[0-9]+\.[0-9]+' | tail -1 || true)
     fi
 
     # If we couldn't extract a version, try reading directly from version.php
@@ -583,14 +599,14 @@ repair_core() {
         log "WARNING" "Could not get clean version from WP-CLI, attempting to read version.php directly..."
 
         if [[ -f "$wp_path/wp-includes/version.php" ]]; then
-            wp_version=$(grep -oP "\\\$wp_version\s*=\s*['\"][0-9]+\.[0-9]+(\.[0-9]+)?['\"]" "$wp_path/wp-includes/version.php" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+            wp_version=$(grep -oP "\\\$wp_version\s*=\s*['\"][0-9]+\.[0-9]+(\.[0-9]+)?['\"]" "$wp_path/wp-includes/version.php" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)
         fi
     fi
 
     # If still no version, try the database
     if [[ -z "$wp_version" ]]; then
         log "WARNING" "Could not read version.php, checking database..."
-        wp_version=$(wp_cli db query "SELECT option_value FROM $(wp_cli db prefix --path="$wp_path")options WHERE option_name = 'db_version'" --path="$wp_path" --skip-column-names 2>/dev/null | head -1)
+        wp_version=$(wp_cli db query "SELECT option_value FROM $(wp_cli db prefix --path="$wp_path" 2>/dev/null || echo "wp_")options WHERE option_name = 'db_version'" --path="$wp_path" --skip-column-names 2>/dev/null | head -1 || true)
 
         # Convert db_version to WP version (approximate - may need manual verification)
         if [[ -n "$wp_version" ]]; then
@@ -631,6 +647,16 @@ repair_core() {
     # Step 2: Remove immutable attributes and fix permissions on wp-admin and wp-includes
     log "INFO" "Fixing file permissions and attributes..."
     fix_core_permissions "$wp_path"
+
+    # Step 3: Ensure root directory is writable (required for wp core download)
+    log "INFO" "Ensuring WordPress root directory is writable..."
+    if command -v chattr &> /dev/null; then
+        chattr -i "$wp_path" 2>/dev/null || true
+    fi
+    if command -v chflags &> /dev/null; then
+        chflags nouchg "$wp_path" 2>/dev/null || true
+    fi
+    chmod u+w "$wp_path" 2>/dev/null || true
 
     log "INFO" "Downloading WordPress core $wp_version..."
 
@@ -992,32 +1018,38 @@ main() {
 
     echo ""
 
+    # Fix permissions first if requested
+    if [[ "$FIX_PERMISSIONS" == true ]]; then
+        fix_all_permissions "$wp_path" || true
+        echo ""
+    fi
+
     # Verify and repair core
     if ! verify_core_checksum "$wp_path"; then
-        repair_core "$wp_path"
+        repair_core "$wp_path" || true
     fi
 
     echo ""
 
     # Scan and clean critical files (wp-config.php, mu-plugins, etc.) - only if --force-clean
     if [[ "$FORCE_CLEAN" == true ]]; then
-        scan_and_clean_critical_files "$wp_path"
+        scan_and_clean_critical_files "$wp_path" || true
         echo ""
     fi
 
     # Verify and repair plugins
-    verify_plugin_checksums "$wp_path"
+    verify_plugin_checksums "$wp_path" || true
 
     echo ""
 
     # Verify and repair themes
-    verify_theme_checksums "$wp_path"
+    verify_theme_checksums "$wp_path" || true
 
     echo ""
 
-    # Print summary
-    print_summary
-    exit_code=$?
+    # Print summary — capture exit code without letting set -e kill the script
+    local exit_code=0
+    print_summary || exit_code=$?
 
     exit $exit_code
 }
