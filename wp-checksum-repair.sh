@@ -2,7 +2,7 @@
 
 #===============================================================================
 # WP Checksum Verification & Repair Script
-# Verifies checksums for WordPress core, plugins, and themes.
+# Verifies checksums for WordPress core and plugins.
 # Reinstalls any components that fail checksum verification.
 #===============================================================================
 
@@ -59,9 +59,7 @@ run_as_root() {
 
 # Arrays to track failures
 declare -a FAILED_PLUGINS=()
-declare -a FAILED_THEMES=()
 declare -a SKIPPED_PLUGINS=()
-declare -a SKIPPED_THEMES=()
 CORE_FAILED=false
 
 #===============================================================================
@@ -804,85 +802,6 @@ repair_plugin() {
     fi
 }
 
-verify_theme_checksums() {
-    local wp_path="$1"
-
-    log "INFO" "Verifying theme checksums..."
-
-    # Get list of all themes using CSV format (no jq dependency)
-    local themes_raw
-    themes_raw=$(wp_cli theme list --path="$wp_path" --format=csv --fields=name,status,version 2>/dev/null) || true
-
-    if [[ -z "$themes_raw" ]]; then
-        log "ERROR" "Failed to get theme list"
-        return 1
-    fi
-
-    # Parse themes - skip header line
-    local theme_count
-    theme_count=$(echo "$themes_raw" | tail -n +2 | wc -l | tr -d ' ')
-
-    if [[ "$theme_count" == "0" ]]; then
-        log "INFO" "No themes installed"
-        return 0
-    fi
-
-    log "INFO" "Found $theme_count themes to verify"
-
-    # Check each theme individually
-    while IFS=',' read -r theme_name theme_status theme_version; do
-        # Skip header
-        [[ "$theme_name" == "name" ]] && continue
-
-        # Try to verify theme checksums (if available)
-        local verify_output
-        verify_output=$(wp_cli theme verify-checksums "$theme_name" --path="$wp_path" 2>&1) || true
-
-        if [[ -z "$verify_output" ]] || [[ "$verify_output" =~ "Success" ]]; then
-            verbose_log "Theme '$theme_name' checksums verified"
-        elif [[ "$verify_output" =~ "Could not retrieve" ]] || [[ "$verify_output" =~ "not available" ]] || [[ "$verify_output" =~ "not found" ]] || [[ "$verify_output" =~ "does not exist" ]]; then
-            log "WARNING" "Skipping theme '$theme_name' (not in WordPress.org repository)"
-            SKIPPED_THEMES+=("$theme_name")
-        elif [[ "$verify_output" =~ "Error" ]] || [[ "$verify_output" =~ "Warning" ]] || [[ "$verify_output" =~ "File doesn't verify" ]]; then
-            repair_theme "$wp_path" "$theme_name" || true
-        fi
-    done <<< "$themes_raw"
-
-    return 0
-}
-
-repair_theme() {
-    local wp_path="$1"
-    local theme_name="$2"
-
-    # Get theme version
-    local theme_version
-    theme_version=$(wp_cli theme get "$theme_name" --path="$wp_path" --field=version 2>/dev/null) || {
-        log "WARNING" "Could not get version for theme '$theme_name', skipping"
-        SKIPPED_THEMES+=("$theme_name")
-        return 1
-    }
-
-    log "WARNING" "Theme '$theme_name' (v$theme_version) failed checksum verification"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log "DRY-RUN" "Would reinstall theme '$theme_name' version $theme_version"
-        return 0
-    fi
-
-    log "INFO" "Reinstalling theme '$theme_name' version $theme_version..."
-
-    # Force reinstall the same version
-    if wp_cli theme install "$theme_name" --version="$theme_version" --force --path="$wp_path"; then
-        log "SUCCESS" "Theme '$theme_name' v$theme_version reinstalled successfully"
-        return 0
-    else
-        log "ERROR" "Failed to reinstall theme '$theme_name'"
-        FAILED_THEMES+=("$theme_name")
-        return 1
-    fi
-}
-
 print_summary() {
     echo ""
     log "INFO" "=========================================="
@@ -903,19 +822,11 @@ print_summary() {
         log "ERROR" "Failed to repair plugins: ${FAILED_PLUGINS[*]}"
     fi
 
-    if [[ ${#FAILED_THEMES[@]} -gt 0 ]]; then
-        log "ERROR" "Failed to repair themes: ${FAILED_THEMES[*]}"
-    fi
-
     if [[ ${#SKIPPED_PLUGINS[@]} -gt 0 ]]; then
         log "WARNING" "Skipped plugins (premium/custom): ${SKIPPED_PLUGINS[*]}"
     fi
 
-    if [[ ${#SKIPPED_THEMES[@]} -gt 0 ]]; then
-        log "WARNING" "Skipped themes (premium/custom): ${SKIPPED_THEMES[*]}"
-    fi
-
-    local total_failures=$((${#FAILED_PLUGINS[@]} + ${#FAILED_THEMES[@]}))
+    local total_failures=${#FAILED_PLUGINS[@]}
     if [[ "$CORE_FAILED" == true ]]; then
         total_failures=$((total_failures + 1))
     fi
@@ -1039,11 +950,6 @@ main() {
 
     # Verify and repair plugins
     verify_plugin_checksums "$wp_path" || true
-
-    echo ""
-
-    # Verify and repair themes
-    verify_theme_checksums "$wp_path" || true
 
     echo ""
 

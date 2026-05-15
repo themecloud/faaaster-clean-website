@@ -1,15 +1,14 @@
 # Faaaster Clean Website
 
-Script de vérification et réparation des checksums WordPress. Vérifie l'intégrité du core, des plugins et des thèmes WordPress, et réinstalle automatiquement les composants compromis.
+Script de vérification et réparation des checksums WordPress. Vérifie l'intégrité du core et des plugins WordPress, et réinstalle automatiquement les composants compromis.
 
 ## Fonctionnalités
 
 - ✅ Vérifie les checksums du core WordPress
 - ✅ Vérifie les checksums des plugins
-- ✅ Vérifie les checksums des thèmes
 - ✅ Supprime les fichiers malveillants qui ne devraient pas exister
 - ✅ Réinstalle automatiquement les fichiers corrompus avec la même version
-- ✅ Ignore les plugins/thèmes premium (non disponibles sur WordPress.org)
+- ✅ Ignore les plugins premium (non disponibles sur WordPress.org)
 - ✅ Corrige les permissions et attributs des fichiers
 - ✅ Scan et nettoyage des fichiers critiques (wp-config.php, mu-plugins, etc.)
 - ✅ Mode dry-run pour prévisualiser les actions
@@ -34,7 +33,7 @@ chmod +x /app/conf/wp-checksum-repair.sh
 ## Utilisation
 
 ```bash
-# Utilisation basique (vérifie et répare core, plugins, thèmes)
+# Utilisation basique (vérifie et répare core et plugins)
 ./wp-checksum-repair.sh
 
 # Mode dry-run (prévisualise sans modifier)
@@ -97,12 +96,6 @@ chmod +x /app/conf/wp-checksum-repair.sh
 3. Les plugins avec checksums invalides sont réinstallés avec la même version
 4. Les plugins premium/custom (non sur WordPress.org) sont ignorés avec un avertissement
 
-### Vérification des Thèmes
-1. Liste tous les thèmes installés
-2. Vérifie les checksums de chaque thème
-3. Les thèmes avec checksums invalides sont réinstallés avec la même version
-4. Les thèmes premium/custom sont ignorés avec un avertissement
-
 ### Option --fix-permissions
 - Supprime les attributs immutables (chattr -i / chflags nouchg)
 - Change le propriétaire selon l'utilisateur spécifié (défaut: `www-data:www-data`)
@@ -157,9 +150,6 @@ Le script utilise `--skip-plugins --skip-themes` pour toutes les commandes WP-CL
 [INFO] Reinstalling plugin 'akismet' version 5.0...
 [SUCCESS] Plugin 'akismet' v5.0 reinstalled successfully
 [WARNING] Skipping plugin 'premium-plugin' (not in WordPress.org repository)
-
-[INFO] Verifying theme checksums...
-[SUCCESS] All theme checksums verified successfully
 
 [INFO] ==========================================
 [INFO]           SUMMARY REPORT
