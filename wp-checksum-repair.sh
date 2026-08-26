@@ -721,11 +721,18 @@ verify_plugin_checksums() {
         # Skip header
         [[ "$plugin_name" == "name" ]] && continue
 
-        # Skip must-use plugins
-        if [[ "$plugin_status" == "must-use" ]]; then
-            verbose_log "Plugin '$plugin_name' (v$plugin_version): skipped_must_use"
-            continue
-        fi
+        # MU plugins and WordPress drop-ins have no applicable WP.org plugin
+        # checksum. Drop-ins remain covered by scan_and_clean_critical_files.
+        case "$plugin_status" in
+            must-use)
+                verbose_log "Plugin '$plugin_name' (v$plugin_version): skipped_must_use"
+                continue
+                ;;
+            dropin)
+                verbose_log "Drop-in '$plugin_name': skipped_checksum_not_applicable"
+                continue
+                ;;
+        esac
 
         local verify_output
         local verify_status=0
@@ -1003,5 +1010,7 @@ main() {
     exit $exit_code
 }
 
-# Run main function
-main "$@"
+# Run main function unless the script is sourced by its regression tests.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
