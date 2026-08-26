@@ -2,7 +2,7 @@
 
 #===============================================================================
 # WP Checksum Verification & Repair Script
-# Verifies checksums for WordPress core and plugins.
+# Verifies checksums for WordPress core and plugins; themes are inventory-only.
 # Reinstalls any components that fail checksum verification.
 #===============================================================================
 
@@ -61,6 +61,7 @@ run_as_root() {
 declare -a FAILED_PLUGINS=()
 declare -a SKIPPED_PLUGINS=()
 CORE_FAILED=false
+THEMES_INVENTORIED=0
 
 #===============================================================================
 # Functions
@@ -135,6 +136,16 @@ log() {
 verbose_log() {
     if [[ "$VERBOSE" == true ]]; then
         log "INFO" "$1"
+    fi
+}
+
+append_unique() {
+    local value="$1"
+    shift
+    local -n target_array="$1"
+
+    if [[ ! " ${target_array[*]} " =~ " ${value} " ]]; then
+        target_array+=("$value")
     fi
 }
 
@@ -701,71 +712,61 @@ verify_plugin_checksums() {
     fi
 
     log "INFO" "Found $plugin_count plugins to verify"
+    local verified_count=0
+    local skipped_count=0
+    local repaired_count=0
+    local failed_count=0
 
-    # Get list of plugins with checksum issues
-    local failed_plugins_output
-    if failed_plugins_output=$(wp_cli plugin verify-checksums --all --path="$wp_path" 2>&1); then
-        log "SUCCESS" "All plugin checksums verified successfully"
-        return 0
-    fi
-
-    # Parse failed plugins from output
-    # The output format is typically: "Warning: File doesn't verify against checksum: plugin-name/file.php"
-    # Or: "Error: Could not retrieve plugin checksums for plugin-name"
-
-    local plugins_to_repair=()
-    local plugins_to_skip=()
-
-    while IFS= read -r line; do
-        # Extract plugin name from various error formats
-        if [[ "$line" =~ "File doesn't verify" ]] || [[ "$line" =~ "file has been modified" ]]; then
-            local plugin_name
-            # Extract plugin name (first path component after the message)
-            plugin_name=$(echo "$line" | sed -n 's/.*: \([^/]*\)\/.*/\1/p' | head -1)
-            if [[ -n "$plugin_name" ]] && [[ ! " ${plugins_to_repair[*]} " =~ " ${plugin_name} " ]]; then
-                plugins_to_repair+=("$plugin_name")
-            fi
-        elif [[ "$line" =~ "Could not retrieve" ]] || [[ "$line" =~ "not available" ]]; then
-            local plugin_name
-            # Extract plugin name from "checksums for <plugin-name>" pattern
-            plugin_name=$(echo "$line" | sed -n 's/.*checksums for \([a-zA-Z0-9_-]*\).*/\1/p' | head -1)
-            if [[ -n "$plugin_name" ]] && [[ ! " ${plugins_to_skip[*]} " =~ " ${plugin_name} " ]]; then
-                plugins_to_skip+=("$plugin_name")
-                log "WARNING" "Skipping plugin '$plugin_name' (not in WordPress.org repository)"
-                SKIPPED_PLUGINS+=("$plugin_name")
-            fi
-        fi
-    done <<< "$failed_plugins_output"
-
-    # Also verify each plugin individually using CSV data (skip header line)
     while IFS=',' read -r plugin_name plugin_status plugin_version; do
         # Skip header
         [[ "$plugin_name" == "name" ]] && continue
 
         # Skip must-use plugins
-        [[ "$plugin_status" == "must-use" ]] && continue
+        if [[ "$plugin_status" == "must-use" ]]; then
+            verbose_log "Plugin '$plugin_name' (v$plugin_version): skipped_must_use"
+            continue
+        fi
 
-        # Skip already processed plugins
-        [[ " ${plugins_to_repair[*]} " =~ " ${plugin_name} " ]] && continue
-        [[ " ${plugins_to_skip[*]} " =~ " ${plugin_name} " ]] && continue
-
-        # Try to verify this specific plugin
         local verify_output
-        verify_output=$(wp_cli plugin verify-checksums "$plugin_name" --path="$wp_path" 2>&1) || true
+        local verify_status=0
+        verify_output=$(wp_cli plugin verify-checksums "$plugin_name" --path="$wp_path" 2>&1) || verify_status=$?
 
-        if [[ "$verify_output" =~ "Could not retrieve" ]] || [[ "$verify_output" =~ "not available" ]] || [[ "$verify_output" =~ "not found" ]]; then
-            plugins_to_skip+=("$plugin_name")
+        if [[ "$verify_output" =~ "Could not retrieve" ]] || [[ "$verify_output" =~ "Couldn't fetch response" ]] || [[ "$verify_output" =~ "not available" ]] || [[ "$verify_output" =~ "not found" ]]; then
             log "WARNING" "Skipping plugin '$plugin_name' (not in WordPress.org repository)"
-            SKIPPED_PLUGINS+=("$plugin_name")
-        elif [[ "$verify_output" =~ "Error" ]] || [[ "$verify_output" =~ "Warning" ]] || [[ "$verify_output" =~ "File doesn't verify" ]]; then
-            plugins_to_repair+=("$plugin_name")
+            append_unique "$plugin_name" SKIPPED_PLUGINS
+            verbose_log "Plugin '$plugin_name' (v$plugin_version): skipped_not_wporg"
+            skipped_count=$((skipped_count + 1))
+        elif [[ $verify_status -eq 0 ]] && [[ "$verify_output" =~ "Success:" ]]; then
+            verbose_log "Plugin '$plugin_name' (v$plugin_version): verified"
+            verified_count=$((verified_count + 1))
+        else
+            verbose_log "Plugin '$plugin_name' (v$plugin_version): failed_checksum"
+
+            if repair_plugin "$wp_path" "$plugin_name"; then
+                if [[ "$DRY_RUN" == true ]]; then
+                    verbose_log "Plugin '$plugin_name' (v$plugin_version): failed_checksum -> dry_run_reinstall_pending"
+                else
+                    verbose_log "Plugin '$plugin_name' (v$plugin_version): failed_checksum -> repaired"
+                fi
+                repaired_count=$((repaired_count + 1))
+            else
+                verbose_log "Plugin '$plugin_name' (v$plugin_version): failed_checksum -> repair_failed"
+                failed_count=$((failed_count + 1))
+            fi
         fi
     done <<< "$plugins_raw"
 
-    # Repair plugins with failed checksums
-    for plugin_name in "${plugins_to_repair[@]}"; do
-        repair_plugin "$wp_path" "$plugin_name" || true
-    done
+    if [[ $failed_count -gt 0 ]]; then
+        log "ERROR" "Plugin checksum verification completed with $failed_count unrepaired failure(s)"
+        return 1
+    fi
+
+    if [[ $repaired_count -gt 0 ]]; then
+        log "WARNING" "Plugin checksum verification found issues and repaired $repaired_count plugin(s)"
+        return 0
+    fi
+
+    log "SUCCESS" "All plugin checksums verified successfully ($verified_count verified, $skipped_count skipped)"
 
     return 0
 }
@@ -777,8 +778,8 @@ repair_plugin() {
     # Get plugin version
     local plugin_version
     plugin_version=$(wp_cli plugin get "$plugin_name" --path="$wp_path" --field=version 2>/dev/null) || {
-        log "WARNING" "Could not get version for plugin '$plugin_name', skipping"
-        SKIPPED_PLUGINS+=("$plugin_name")
+        log "ERROR" "Could not get version for plugin '$plugin_name', cannot repair"
+        append_unique "$plugin_name" FAILED_PLUGINS
         return 1
     }
 
@@ -797,9 +798,44 @@ repair_plugin() {
         return 0
     else
         log "ERROR" "Failed to reinstall plugin '$plugin_name'"
-        FAILED_PLUGINS+=("$plugin_name")
+        append_unique "$plugin_name" FAILED_PLUGINS
         return 1
     fi
+}
+
+inventory_themes() {
+    local wp_path="$1"
+
+    log "INFO" "Inventorying installed themes..."
+
+    # Get list of all themes using CSV format (no jq dependency)
+    local themes_raw
+    themes_raw=$(wp_cli theme list --path="$wp_path" --format=csv --fields=name,status,version 2>/dev/null) || true
+
+    if [[ -z "$themes_raw" ]]; then
+        log "ERROR" "Failed to get theme list"
+        return 1
+    fi
+
+    # Parse themes - skip header line
+    local theme_count
+    theme_count=$(echo "$themes_raw" | tail -n +2 | wc -l | tr -d ' ')
+
+    if [[ "$theme_count" == "0" ]]; then
+        log "INFO" "No themes installed"
+        return 0
+    fi
+
+    log "INFO" "Found $theme_count installed themes"
+    log "INFO" "Theme checksum verification is not supported by WP-CLI; themes will be inventoried only"
+    THEMES_INVENTORIED="$theme_count"
+
+    while IFS=',' read -r theme_name theme_status theme_version; do
+        [[ "$theme_name" == "name" ]] && continue
+        verbose_log "Theme '$theme_name' (v$theme_version): checksum_verification_not_supported"
+    done <<< "$themes_raw"
+
+    return 0
 }
 
 print_summary() {
@@ -825,6 +861,8 @@ print_summary() {
     if [[ ${#SKIPPED_PLUGINS[@]} -gt 0 ]]; then
         log "WARNING" "Skipped plugins (premium/custom): ${SKIPPED_PLUGINS[*]}"
     fi
+
+    log "INFO" "Themes: inventoried only (${THEMES_INVENTORIED} found, checksum verification not supported by WP-CLI)"
 
     local total_failures=${#FAILED_PLUGINS[@]}
     if [[ "$CORE_FAILED" == true ]]; then
@@ -950,6 +988,11 @@ main() {
 
     # Verify and repair plugins
     verify_plugin_checksums "$wp_path" || true
+
+    echo ""
+
+    # Themes have no official WP-CLI checksum command: inventory only.
+    inventory_themes "$wp_path" || true
 
     echo ""
 

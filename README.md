@@ -1,6 +1,6 @@
 # Faaaster Clean Website
 
-Script de vérification et réparation des checksums WordPress. Vérifie l'intégrité du core et des plugins WordPress, et réinstalle automatiquement les composants compromis.
+Script de vérification et réparation des checksums WordPress. Vérifie l'intégrité du core et des plugins WordPress, inventorie les thèmes installés, et réinstalle automatiquement les plugins compromis.
 
 ## Fonctionnalités
 
@@ -8,11 +8,13 @@ Script de vérification et réparation des checksums WordPress. Vérifie l'inté
 - ✅ Vérifie les checksums des plugins
 - ✅ Supprime les fichiers malveillants qui ne devraient pas exister
 - ✅ Réinstalle automatiquement les fichiers corrompus avec la même version
-- ✅ Ignore les plugins premium (non disponibles sur WordPress.org)
+- ✅ Ignore les plugins premium/custom (non disponibles sur WordPress.org)
+- ✅ Inventorie les thèmes sans tenter de vérifier leurs checksums
 - ✅ Corrige les permissions et attributs des fichiers
 - ✅ Scan et nettoyage des fichiers critiques (wp-config.php, mu-plugins, etc.)
 - ✅ Mode dry-run pour prévisualiser les actions
 - ✅ Logging dans un fichier et sur la console
+- ✅ Résultat détaillé de chaque plugin et thème avec `--verbose`
 
 ## Prérequis
 
@@ -33,7 +35,7 @@ chmod +x /app/conf/wp-checksum-repair.sh
 ## Utilisation
 
 ```bash
-# Utilisation basique (vérifie et répare core et plugins)
+# Utilisation basique (vérifie et répare core/plugins, inventorie les thèmes)
 ./wp-checksum-repair.sh
 
 # Mode dry-run (prévisualise sans modifier)
@@ -95,6 +97,12 @@ chmod +x /app/conf/wp-checksum-repair.sh
 2. Vérifie les checksums de chaque plugin
 3. Les plugins avec checksums invalides sont réinstallés avec la même version
 4. Les plugins premium/custom (non sur WordPress.org) sont ignorés avec un avertissement
+5. Avec `--verbose`, affiche le statut final de chaque plugin (`verified`, `skipped_not_wporg`, `failed_checksum -> repaired`, etc.)
+
+### Inventaire des thèmes
+1. Liste tous les thèmes installés
+2. N'essaie pas de vérifier leurs checksums, car WP-CLI ne fournit pas de commande officielle `theme verify-checksums`
+3. Avec `--verbose`, affiche pour chaque thème le statut `checksum_verification_not_supported`
 
 ### Option --fix-permissions
 - Supprime les attributs immutables (chattr -i / chflags nouchg)
@@ -146,16 +154,26 @@ Le script utilise `--skip-plugins --skip-themes` pour toutes les commandes WP-CL
 
 [INFO] Verifying plugin checksums...
 [INFO] Found 12 plugins to verify
+[INFO] Plugin 'hello-dolly' (v1.7.2): verified
 [WARNING] Plugin 'akismet' (v5.0) failed checksum verification
 [INFO] Reinstalling plugin 'akismet' version 5.0...
 [SUCCESS] Plugin 'akismet' v5.0 reinstalled successfully
+[INFO] Plugin 'akismet' (v5.0): failed_checksum -> repaired
 [WARNING] Skipping plugin 'premium-plugin' (not in WordPress.org repository)
+[INFO] Plugin 'premium-plugin' (v3.4.1): skipped_not_wporg
+
+[INFO] Inventorying installed themes...
+[INFO] Found 3 installed themes
+[INFO] Theme checksum verification is not supported by WP-CLI; themes will be inventoried only
+[INFO] Theme 'astra' (v4.8.0): checksum_verification_not_supported
+[INFO] Theme 'my-custom-theme' (v1.2.0): checksum_verification_not_supported
 
 [INFO] ==========================================
 [INFO]           SUMMARY REPORT
 [INFO] ==========================================
 [SUCCESS] Core: OK
 [WARNING] Skipped plugins (premium/custom): premium-plugin
+[INFO] Themes: inventoried only (3 found, checksum verification not supported by WP-CLI)
 [SUCCESS] All checksum verifications completed successfully
 [INFO] Log file: /app/conf/faaaster-clean.log
 [INFO] ==========================================
